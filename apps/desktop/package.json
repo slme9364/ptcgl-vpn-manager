@@ -1,6 +1,6 @@
 {
   "name": "@ptcgl/desktop",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "On-demand GCP WireGuard manager for PTCGL",
   "author": "PTCGL VPN Manager contributors",
   "private": true,

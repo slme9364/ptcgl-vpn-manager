@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 const exec = promisify(execFile);
 import { parseWireGuardHealth, waitForWireGuardHandshake } from './handshake';
+import { stageWindowsConfig } from './windows-config';
 
 export function updateEndpoint(config: string, endpointIp: string, port = 51820): string {
   if (isIP(endpointIp) !== 4) throw new Error('Invalid IPv4 endpoint');
@@ -73,6 +74,7 @@ export async function readClientPublicKey(configPath: string) {
 
 export class WireGuardController {
   private stagedMacConfig?: string;
+  private stagedWindowsConfig?: string;
   async connect(configPath: string) {
     const startedAt = Math.floor(Date.now() / 1000);
     if (process.platform === 'win32') {
@@ -81,7 +83,8 @@ export class WireGuardController {
       try { await exec('sc.exe', ['query', service], { windowsHide: true }); exists = true; }
       catch (error) { if ((error as { code?: number }).code !== 1060) throw error; }
       if (exists) await exec(wireGuardExecutable(), ['/uninstalltunnelservice', basename(configPath, '.conf')], { windowsHide: true });
-      await exec(wireGuardExecutable(), ['/installtunnelservice', configPath], { windowsHide: true });
+      this.stagedWindowsConfig = await stageWindowsConfig(configPath);
+      await exec(wireGuardExecutable(), ['/installtunnelservice', this.stagedWindowsConfig], { windowsHide: true });
     }
     else if (process.platform === 'darwin') {
       this.stagedMacConfig = join(tmpdir(), `ptcgl${process.pid}.conf`);
@@ -110,7 +113,11 @@ export class WireGuardController {
     return parseWireGuardHealth(handshake.stdout, transfer.stdout, peer);
   }
   async disconnect(configPath: string) {
-    if (process.platform === 'win32') await exec(wireGuardExecutable(), ['/uninstalltunnelservice', basename(configPath, '.conf')], { windowsHide: true });
+    if (process.platform === 'win32') {
+      await exec(wireGuardExecutable(), ['/uninstalltunnelservice', basename(configPath, '.conf')], { windowsHide: true });
+      if (this.stagedWindowsConfig) await fs.rm(this.stagedWindowsConfig, { force: true });
+      this.stagedWindowsConfig = undefined;
+    }
     else if (process.platform === 'darwin') {
       const staged = this.stagedMacConfig ?? configPath;
       try { await runMacWireGuard('down', staged); } finally { if (this.stagedMacConfig) await fs.rm(this.stagedMacConfig, { force: true }); this.stagedMacConfig = undefined; }
