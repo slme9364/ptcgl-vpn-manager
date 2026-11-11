@@ -1,0 +1,48 @@
+{
+  "name": "@ptcgl/desktop",
+  "version": "0.1.0",
+  "description": "On-demand GCP WireGuard manager for PTCGL",
+  "author": "PTCGL VPN Manager contributors",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "package": "pnpm build && electron-builder --dir"
+  },
+  "dependencies": {
+    "@ptcgl/core": "workspace:*",
+    "@ptcgl/gcp": "workspace:*",
+    "@ptcgl/vpn": "workspace:*",
+    "electron-store": "^11.0.2",
+    "electron-updater": "^6.6.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^39.2.3",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^4.0.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2",
+    "vitest": "^4.0.8"
+  },
+  "build": {
+    "appId": "dev.ptcgl.vpn-manager",
+    "productName": "PTCGL VPN Manager",
+    "files": ["out/**/*"],
+    "extraResources": [{ "from": "../../infrastructure/terraform", "to": "infrastructure/terraform", "filter": ["**/*", "!*.tfstate*", "!*.tfvars", "!.terraform/**", "!*.tfplan"] }],
+    "publish": [{ "provider": "github", "owner": "slme9364", "repo": "ptcgl-vpn-manager" }],
+    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.utilities" },
+    "win": { "target": "nsis", "requestedExecutionLevel": "requireAdministrator" },
+    "linux": { "target": "AppImage" }
+  }
+}
