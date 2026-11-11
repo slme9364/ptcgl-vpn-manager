@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import Store from 'electron-store';
-import { autoUpdater } from 'electron-updater';
+import electronUpdater from 'electron-updater';
 import { z } from 'zod';
 import { DEFAULT_SETTINGS, REGIONS, type AppSettings, type DashboardState } from '@ptcgl/core';
 import { GcpVmClient, TerraformRunner, type DeploymentInput } from '@ptcgl/gcp';
@@ -21,6 +21,7 @@ const store = new Store<{ settings: AppSettings }>({ defaults: { settings: DEFAU
 const gcp = new GcpVmClient();
 const wireguard = new WireGuardController();
 const wiresock = new WireSockController();
+const { autoUpdater } = electronUpdater;
 const getSettings = (): AppSettings => ({ ...DEFAULT_SETTINGS, ...store.get('settings') });
 let state: DashboardState = { vmStatus: 'UNKNOWN', vpnStatus: 'DISCONNECTED', region: getSettings().region, estimatedMonthlyCost: 0, busy: false, infraStatus: 'IDLE' };
 let operation: Promise<void> | undefined;
