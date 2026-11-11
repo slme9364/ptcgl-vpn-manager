@@ -2,14 +2,9 @@
 
 ## 壊れたインストールのクリーンアップ
 
-インストーラーやアンインストーラーが完了しない場合は、管理者PowerShellで次を実行します。PTCGL、WireGuard、GCP認証情報は削除しません。
+ZIP版には`Cleanup-PTCGL-VPN-Manager.cmd`を同梱しています。インストーラーやアンインストーラーが完了しない場合は、ZIPを展開してこのファイルをダブルクリックします。UACの確認後に残骸を削除します。PowerShellの実行ポリシーは不要です。PTCGL、WireGuard、GCP認証情報、VPN Managerの保存設定は削除しません。
 
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\cleanup-windows.ps1
-```
-
-削除対象を事前確認する場合は `-WhatIf`、VPN Managerの保存設定も削除する場合は `-RemoveSettings` を付けます。
+PowerShell版は自動化用途として残していますが、通常の手動クリーンアップではCMD版を使用してください。
 
 ## 必要なソフトウェア
 

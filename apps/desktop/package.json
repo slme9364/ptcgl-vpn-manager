@@ -1,6 +1,6 @@
 {
   "name": "@ptcgl/desktop",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "On-demand GCP WireGuard manager for PTCGL",
   "author": "PTCGL VPN Manager contributors",
   "private": true,
@@ -45,7 +45,8 @@
     "win": {
       "target": ["nsis", "zip"],
       "requestedExecutionLevel": "requireAdministrator",
-      "artifactName": "PTCGL-VPN-Manager-${version}-win-${arch}.${ext}"
+      "artifactName": "PTCGL-VPN-Manager-${version}-win-${arch}.${ext}",
+      "extraFiles": [{ "from": "../../scripts/cleanup-windows.cmd", "to": "Cleanup-PTCGL-VPN-Manager.cmd" }]
     },
     "nsis": {
       "oneClick": false,
