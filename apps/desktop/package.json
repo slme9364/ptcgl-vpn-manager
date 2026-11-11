@@ -41,8 +41,8 @@
     "files": ["out/**/*"],
     "extraResources": [{ "from": "../../infrastructure/terraform", "to": "infrastructure/terraform", "filter": ["**/*", "!*.tfstate*", "!*.tfvars", "!.terraform/**", "!*.tfplan"] }],
     "publish": [{ "provider": "github", "owner": "slme9364", "repo": "ptcgl-vpn-manager" }],
-    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.utilities" },
-    "win": { "target": "nsis", "requestedExecutionLevel": "requireAdministrator" },
+    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.utilities", "artifactName": "PTCGL-VPN-Manager-${version}-${arch}-${os}.${ext}" },
+    "win": { "target": "nsis", "requestedExecutionLevel": "requireAdministrator", "artifactName": "PTCGL-VPN-Manager-Setup-${version}.${ext}" },
     "linux": { "target": "AppImage" }
   }
 }
