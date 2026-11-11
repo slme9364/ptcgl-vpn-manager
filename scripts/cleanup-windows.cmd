@@ -22,6 +22,8 @@ call :RemoveDir "%LOCALAPPDATA%\Programs\PTCGL VPN Manager"
 call :RemoveDir "%LOCALAPPDATA%\ptcgl-vpn-manager-updater"
 call :RemoveDir "%ProgramFiles%\PTCGL VPN Manager"
 if exist "%SystemDrive%\Program Files (x86)\NUL" call :RemoveDir "%SystemDrive%\Program Files (x86)\PTCGL VPN Manager"
+echo   Scanning NSIS temporary files...
+for /f "delims=" %%F in ('where /r "%TEMP%" "PTCGL VPN Manager.exe" 2^>nul') do call :RemoveDetectedInstall "%%~dpF"
 
 echo [3/4] Removing shortcuts...
 call :RemoveFile "%APPDATA%\Microsoft\Windows\Start Menu\Programs\PTCGL VPN Manager.lnk"
@@ -59,10 +61,19 @@ exit /b 0
 
 :RemoveRegistry
 set "FOUND_REGISTRY="
-for /f "delims=" %%K in ('reg query "%~1" /s /f "PTCGL VPN Manager" /d /e 2^>nul ^| findstr /B /C:"HKEY_"') do (
+for /f "delims=" %%K in ('reg query "%~1" /s /f "PTCGL VPN Manager" /d 2^>nul ^| findstr /B /C:"HKEY_"') do (
   set "FOUND_REGISTRY=1"
   reg delete "%%K" /f >nul 2>&1
   if errorlevel 1 (echo   FAILED: %%K) else (echo   REMOVED: %%K)
 )
 if not defined FOUND_REGISTRY echo   NOT FOUND under %~1
+exit /b 0
+
+:RemoveDetectedInstall
+set "DETECTED_DIR=%~1"
+if exist "%DETECTED_DIR%resources\app.asar" (
+  call :RemoveDir "%DETECTED_DIR%"
+) else (
+  echo   SKIPPED UNVERIFIED: %DETECTED_DIR%
+)
 exit /b 0

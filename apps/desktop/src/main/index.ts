@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { existsSync } from 'node:fs';
+import { appendFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import Store from 'electron-store';
@@ -8,6 +9,10 @@ import { z } from 'zod';
 import { DEFAULT_SETTINGS, REGIONS, type AppSettings, type DashboardState } from '@ptcgl/core';
 import { GcpVmClient, TerraformRunner, type DeploymentInput } from '@ptcgl/gcp';
 import { readClientPublicKey, updateClientAddressFile, updateEndpointFile, WireGuardController, WireSockController } from '@ptcgl/vpn';
+
+// This utility does not need GPU rendering. Disabling it avoids black windows
+// seen with some Windows GPU/driver combinations.
+app.disableHardwareAcceleration();
 
 const schema = z.object({
   projectId: z.string().regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]$|^$/),
@@ -28,6 +33,14 @@ let operation: Promise<void> | undefined;
 let plannedDeploymentId: string | undefined;
 type UpdateState = { status: 'IDLE' | 'CHECKING' | 'AVAILABLE' | 'DOWNLOADING' | 'READY' | 'CURRENT' | 'ERROR'; currentVersion: string; availableVersion?: string; percent?: number; message?: string };
 let updateState: UpdateState = { status: 'IDLE', currentVersion: app.getVersion() };
+
+function writeDiagnostic(message: string) {
+  try {
+    const directory = join(app.getPath('userData'), 'logs');
+    mkdirSync(directory, { recursive: true });
+    appendFileSync(join(directory, 'main.log'), `${new Date().toISOString()} ${message}\n`, 'utf8');
+  } catch { /* Diagnostics must never prevent startup. */ }
+}
 
 function target() { const s = getSettings(); return { projectId: s.projectId, zone: s.zone, instanceName: s.instanceName }; }
 function publish(patch: Partial<DashboardState>) { state = { ...state, ...patch }; BrowserWindow.getAllWindows().forEach(w => w.webContents.send('state:changed', state)); }
@@ -154,11 +167,22 @@ function configureAutoUpdater() {
 }
 
 function createWindow() {
-  const win = new BrowserWindow({ width: 1040, height: 720, minWidth: 860, minHeight: 620, webPreferences: { preload: join(__dirname, '../preload/index.mjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  const win = new BrowserWindow({ show: false, backgroundColor: '#07110d', width: 1040, height: 720, minWidth: 860, minHeight: 620, webPreferences: { preload: join(__dirname, '../preload/index.mjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   win.removeMenu();
+  win.once('ready-to-show', () => win.show());
+  setTimeout(() => { if (!win.isDestroyed() && !win.isVisible()) win.show(); }, 3000);
+  win.webContents.on('did-fail-load', (_event, code, description, url) => {
+    writeDiagnostic(`did-fail-load code=${code} description=${description} url=${url}`);
+    win.show();
+  });
+  win.webContents.on('render-process-gone', (_event, details) => writeDiagnostic(`render-process-gone reason=${details.reason} exitCode=${details.exitCode}`));
+  win.webContents.on('console-message', (_event, level, message) => { if (level >= 2) writeDiagnostic(`renderer-console level=${level} ${message}`); });
   if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL); else void win.loadFile(join(__dirname, '../renderer/index.html'));
 }
+process.on('uncaughtException', error => writeDiagnostic(`uncaughtException ${error.stack ?? error.message}`));
+process.on('unhandledRejection', reason => writeDiagnostic(`unhandledRejection ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`));
 app.whenReady().then(() => {
+  writeDiagnostic(`startup version=${app.getVersion()} platform=${process.platform} arch=${process.arch}`);
   registerIpc(); configureAutoUpdater(); createWindow();
   if (app.isPackaged) setTimeout(() => void autoUpdater.checkForUpdates().catch(error => publishUpdate({ status: 'ERROR', message: error instanceof Error ? error.message : String(error) })), 5000);
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
