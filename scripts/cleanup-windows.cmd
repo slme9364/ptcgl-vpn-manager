@@ -19,7 +19,9 @@ if errorlevel 1 (echo   NOT RUNNING) else (echo   STOPPED)
 
 echo [2/4] Removing installed files and updater cache...
 call :RemoveDir "%LOCALAPPDATA%\Programs\PTCGL VPN Manager"
+call :RemoveDir "%LOCALAPPDATA%\Programs\@ptcgldesktop"
 call :RemoveDir "%LOCALAPPDATA%\ptcgl-vpn-manager-updater"
+call :RemoveDir "%LOCALAPPDATA%\@ptcgldesktop-updater"
 call :RemoveDir "%ProgramFiles%\PTCGL VPN Manager"
 if exist "%SystemDrive%\Program Files (x86)\NUL" call :RemoveDir "%SystemDrive%\Program Files (x86)\PTCGL VPN Manager"
 echo   Scanning NSIS temporary files...
@@ -60,13 +62,16 @@ if exist "%~1" (
 exit /b 0
 
 :RemoveRegistry
-set "FOUND_REGISTRY="
-for /f "delims=" %%K in ('reg query "%~1" /s /f "PTCGL VPN Manager" /d 2^>nul ^| findstr /B /C:"HKEY_"') do (
-  set "FOUND_REGISTRY=1"
-  reg delete "%%K" /f >nul 2>&1
-  if errorlevel 1 (echo   FAILED: %%K) else (echo   REMOVED: %%K)
+rem Stable uninstall GUID generated from dev.ptcgl.vpn-manager. Never use
+rem substring matches across arbitrary uninstall values to select deletion.
+set "APP_UNINSTALL_KEY=%~1\ca841ef7-ba23-5453-9861-b0975a26858b"
+reg query "%APP_UNINSTALL_KEY%" /v DisplayName 2>nul | findstr /R /C:"REG_SZ *PTCGL VPN Manager$" /C:"REG_SZ *PTCGL VPN Manager [0-9]" >nul
+if errorlevel 1 (
+  echo   NOT FOUND under %~1
+) else (
+  reg delete "%APP_UNINSTALL_KEY%" /f >nul 2>&1
+  if errorlevel 1 (echo   FAILED: %APP_UNINSTALL_KEY%) else (echo   REMOVED: %APP_UNINSTALL_KEY%)
 )
-if not defined FOUND_REGISTRY echo   NOT FOUND under %~1
 exit /b 0
 
 :RemoveDetectedInstall

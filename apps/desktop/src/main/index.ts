@@ -45,7 +45,17 @@ function writeDiagnostic(message: string) {
 function target() { const s = getSettings(); return { projectId: s.projectId, zone: s.zone, instanceName: s.instanceName }; }
 function publish(patch: Partial<DashboardState>) { state = { ...state, ...patch }; BrowserWindow.getAllWindows().forEach(w => w.webContents.send('state:changed', state)); }
 function publishUpdate(patch: Partial<UpdateState>) { updateState = { ...updateState, ...patch }; BrowserWindow.getAllWindows().forEach(w => w.webContents.send('update:changed', updateState)); }
-async function refresh() { const vm = await gcp.get(target()); publish({ vmStatus: vm.status, externalIp: vm.externalIp, region: getSettings().region }); return vm; }
+async function refreshWireGuardStatus() {
+  const s = getSettings();
+  if (process.platform !== 'win32' || s.vpnClient !== 'wireguard' || !s.wireGuardConfigPath || state.vpnStatus === 'CONNECTING' || state.vpnStatus === 'DISCONNECTING') return;
+  try {
+    const health = await wireguard.diagnostics(s.wireGuardConfigPath);
+    publish({ vpnHealth: health, vpnStatus: health.connected ? 'CONNECTED' : 'DISCONNECTED' });
+  } catch {
+    publish({ vpnHealth: undefined, vpnStatus: state.vpnStatus === 'CONNECTED' ? 'ERROR' : state.vpnStatus });
+  }
+}
+async function refresh() { const vm = await gcp.get(target()); publish({ vmStatus: vm.status, externalIp: vm.externalIp, region: getSettings().region }); await refreshWireGuardStatus(); return vm; }
 async function exclusive(task: () => Promise<void>) { if (operation) throw new Error('別の操作が進行中です'); publish({ busy: true, message: undefined }); operation = task().finally(() => { operation = undefined; publish({ busy: false }); }); return operation; }
 
 async function connect() {
@@ -68,10 +78,13 @@ async function connect() {
       if (process.platform !== 'win32') throw new Error('WireSockはWindowsでのみ利用できます');
       if (!s.ptcglExecutable) throw new Error('WireSockにはPTCGL実行ファイルの設定が必要です');
       await wiresock.connect(s.wireGuardConfigPath, s.ptcglExecutable);
-    } else await wireguard.connect(s.wireGuardConfigPath);
-    publish({ vpnStatus: 'CONNECTED', message: 'VPNに接続しました' });
+    } else {
+      const health = await wireguard.connect(s.wireGuardConfigPath);
+      publish({ vpnHealth: health });
+    }
+    publish({ vpnStatus: 'CONNECTED', message: s.vpnClient === 'wireguard' ? (process.platform === 'win32' ? 'WireGuardサーバーとのハンドシェイクを確認しました' : 'WireGuardを起動しました。通信の確認は別途必要です') : 'WireSockを起動しました。通信の確認は別途必要です' });
   } catch (error) {
-    publish({ vpnStatus: 'ERROR', message: error instanceof Error ? error.message : String(error) });
+    publish({ vpnStatus: 'ERROR', vpnHealth: undefined, message: error instanceof Error ? error.message : String(error) });
     throw error;
   }
 }
@@ -172,7 +185,7 @@ function configureAutoUpdater() {
 }
 
 function createWindow() {
-  const win = new BrowserWindow({ show: false, backgroundColor: '#07110d', width: 1040, height: 720, minWidth: 860, minHeight: 620, webPreferences: { preload: join(__dirname, '../preload/index.mjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  const win = new BrowserWindow({ show: false, backgroundColor: '#07110d', width: 1040, height: 720, minWidth: 860, minHeight: 620, webPreferences: { preload: join(__dirname, '../preload/index.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   win.removeMenu();
   win.once('ready-to-show', () => win.show());
   setTimeout(() => { if (!win.isDestroyed() && !win.isVisible()) win.show(); }, 3000);
@@ -189,6 +202,11 @@ process.on('unhandledRejection', reason => writeDiagnostic(`unhandledRejection $
 app.whenReady().then(() => {
   writeDiagnostic(`startup version=${app.getVersion()} platform=${process.platform} arch=${process.arch}`);
   registerIpc(); configureAutoUpdater(); createWindow();
+  void refreshWireGuardStatus();
+  const vpnStatusTimer = setInterval(() => {
+    if (!state.busy && state.vpnStatus === 'CONNECTED') void refreshWireGuardStatus();
+  }, 5000);
+  vpnStatusTimer.unref();
   if (app.isPackaged) setTimeout(() => void autoUpdater.checkForUpdates().catch(error => publishUpdate({ status: 'ERROR', message: error instanceof Error ? error.message : String(error) })), 5000);
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
 });

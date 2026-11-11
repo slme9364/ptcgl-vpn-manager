@@ -1,6 +1,6 @@
 {
   "name": "@ptcgl/desktop",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "On-demand GCP WireGuard manager for PTCGL",
   "author": "PTCGL VPN Manager contributors",
   "private": true,
@@ -8,7 +8,7 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "build": "electron-vite build && node ../../scripts/check-desktop-startup.cjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "package": "pnpm build && electron-builder --dir"

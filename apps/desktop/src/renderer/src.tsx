@@ -18,8 +18,9 @@ function App() {
       <Card label="GCP VM" value={state.vmStatus} active={state.vmStatus === 'RUNNING'} />
       <Card label="VPN" value={state.vpnStatus} active={state.vpnStatus === 'CONNECTED'} />
       <Card label="リージョン" value={state.region || '未設定'} />
-      <Card label="外部 IPv4" value={state.externalIp || '—'} mono />
+      <Card label="VMの外部 IPv4" value={state.externalIp || '—'} mono />
     </section>
+    {state.vpnHealth && <p className="notice">WireGuard最終通信: {state.vpnHealth.lastHandshakeAt ? new Date(state.vpnHealth.lastHandshakeAt).toLocaleTimeString('ja-JP') : '未確認'} · 受信 {state.vpnHealth.receivedBytes.toLocaleString()} B · 送信 {state.vpnHealth.sentBytes.toLocaleString()} B</p>}
     <section className="session"><div><span className="eyebrow">SESSION</span><h2>{state.busy ? '処理中…' : state.vpnStatus === 'CONNECTED' ? 'VPN接続中' : '準備完了'}</h2><p>実請求とは異なる概算です。VM停止前に他端末の利用状況を確認してください。</p></div><button className="primary" disabled={state.busy} onClick={() => run(window.ptcgl.startSession)}>PTCGLを起動</button></section>
     <div className="actions"><button disabled={state.busy} onClick={() => run(window.ptcgl.refresh)}>状態更新</button><button disabled={state.busy || state.vpnStatus === 'CONNECTED'} onClick={() => run(window.ptcgl.connect)}>VPN接続</button><button disabled={state.busy || state.vpnStatus !== 'CONNECTED'} onClick={() => run(window.ptcgl.disconnect)}>VPN切断</button><button className="danger" disabled={state.busy} onClick={() => confirm('他端末が利用していないことを確認しましたか？') && run(window.ptcgl.stopVm)}>VM停止</button></div>
     <section className="settings infrastructure"><div className="infraHeader"><div><span className="eyebrow">INFRASTRUCTURE</span><h2>リージョン環境</h2></div><span className="badge">{state.infraStatus ?? 'IDLE'}</span></div>

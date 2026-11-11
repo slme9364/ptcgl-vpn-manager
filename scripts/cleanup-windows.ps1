@@ -1,4 +1,4 @@
-[CmdletBinding(SupportsShouldProcess = $true)]
+﻿[CmdletBinding(SupportsShouldProcess = $true)]
 param([switch]$RemoveSettings)
 
 $ErrorActionPreference = 'Stop'
@@ -14,7 +14,9 @@ Get-Process -Name $productName -ErrorAction SilentlyContinue | ForEach-Object {
 
 $paths = @(
   (Join-Path $env:LOCALAPPDATA 'Programs\PTCGL VPN Manager'),
+  (Join-Path $env:LOCALAPPDATA 'Programs\@ptcgldesktop'),
   (Join-Path $env:LOCALAPPDATA 'ptcgl-vpn-manager-updater'),
+  (Join-Path $env:LOCALAPPDATA '@ptcgldesktop-updater'),
   (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\PTCGL VPN Manager.lnk'),
   (Join-Path ([Environment]::GetFolderPath('Desktop')) 'PTCGL VPN Manager.lnk'),
   (Join-Path $env:ProgramFiles 'PTCGL VPN Manager')
@@ -49,7 +51,7 @@ foreach ($root in $uninstallRoots) {
   if (-not (Test-Path -LiteralPath $root)) { continue }
   Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | ForEach-Object {
     $entry = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
-    if ($entry.DisplayName -eq $productName -and $PSCmdlet.ShouldProcess($_.PSPath, 'Remove uninstall registration')) {
+    if ($entry.DisplayName -match '^PTCGL VPN Manager(?: \d[^\r\n]*)?$' -and $PSCmdlet.ShouldProcess($_.PSPath, 'Remove uninstall registration')) {
       Remove-Item -LiteralPath $_.PSPath -Recurse -Force
       $removed.Add("Registry: $($_.PSPath)")
     }

@@ -6,6 +6,7 @@ import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 const exec = promisify(execFile);
+import { parseWireGuardHealth, waitForWireGuardHandshake } from './handshake';
 
 export function updateEndpoint(config: string, endpointIp: string, port = 51820): string {
   if (isIP(endpointIp) !== 4) throw new Error('Invalid IPv4 endpoint');
@@ -73,13 +74,40 @@ export async function readClientPublicKey(configPath: string) {
 export class WireGuardController {
   private stagedMacConfig?: string;
   async connect(configPath: string) {
-    if (process.platform === 'win32') await exec(wireGuardExecutable(), ['/installtunnelservice', configPath], { windowsHide: true });
+    const startedAt = Math.floor(Date.now() / 1000);
+    if (process.platform === 'win32') {
+      const service = 'WireGuardTunnel$' + basename(configPath, '.conf');
+      let exists = false;
+      try { await exec('sc.exe', ['query', service], { windowsHide: true }); exists = true; }
+      catch (error) { if ((error as { code?: number }).code !== 1060) throw error; }
+      if (exists) await exec(wireGuardExecutable(), ['/uninstalltunnelservice', basename(configPath, '.conf')], { windowsHide: true });
+      await exec(wireGuardExecutable(), ['/installtunnelservice', configPath], { windowsHide: true });
+    }
     else if (process.platform === 'darwin') {
       this.stagedMacConfig = join(tmpdir(), `ptcgl${process.pid}.conf`);
       await fs.copyFile(configPath, this.stagedMacConfig); await fs.chmod(this.stagedMacConfig, 0o600);
       try { await runMacWireGuard('up', this.stagedMacConfig); } catch (error) { await fs.rm(this.stagedMacConfig, { force: true }); this.stagedMacConfig = undefined; throw error; }
     }
     else await exec(wireGuardExecutable(), ['up', configPath]);
+    // macOS uses an elevated wg-quick helper; unprivileged polling cannot read its socket.
+    if (process.platform !== 'win32') return undefined;
+    try { return await waitForWireGuardHandshake(() => this.diagnostics(configPath), startedAt); }
+    catch (error) {
+      // Restore the original routes if a full-tunnel connection never becomes usable.
+      await this.disconnect(configPath).catch(() => undefined);
+      throw error;
+    }
+  }
+  async diagnostics(configPath: string) {
+    const config = await fs.readFile(configPath, 'utf8');
+    const peer = config.match(/^PublicKey\s*=\s*([^\r\n]+)$/m)?.[1]?.trim();
+    if (!peer) throw new Error('WireGuard config has no server PublicKey');
+    const name = basename(this.stagedMacConfig ?? configPath, '.conf');
+    const [handshake, transfer] = await Promise.all([
+      exec(wgExecutable(), ['show', name, 'latest-handshakes'], { windowsHide: true, timeout: 5000 }),
+      exec(wgExecutable(), ['show', name, 'transfer'], { windowsHide: true, timeout: 5000 })
+    ]);
+    return parseWireGuardHealth(handshake.stdout, transfer.stdout, peer);
   }
   async disconnect(configPath: string) {
     if (process.platform === 'win32') await exec(wireGuardExecutable(), ['/uninstalltunnelservice', basename(configPath, '.conf')], { windowsHide: true });
@@ -90,7 +118,7 @@ export class WireGuardController {
     else await exec(wireGuardExecutable(), ['down', configPath]);
   }
   async status(configPath: string) {
-    try { await exec('wg', ['show', basename(configPath, '.conf')]); return 'CONNECTED' as const; }
+    try { return (await this.diagnostics(configPath)).connected ? 'CONNECTED' as const : 'DISCONNECTED' as const; }
     catch { return 'DISCONNECTED' as const; }
   }
 }
