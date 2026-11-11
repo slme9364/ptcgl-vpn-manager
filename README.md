@@ -19,7 +19,11 @@ GCP（Singapore）への実デプロイ、macOSからのWireGuard接続、VPN経
 
 ## リリース上の注意
 
-`v0.1.0`は検証用の初期リリースです。配布バイナリはコード署名・macOS公証を行っていないため、OSの警告が表示される場合があります。利用前に各OS向けセットアップ手順と[セキュリティ設計](docs/security.md)を確認してください。
+[最新版のダウンロード（GitHub Releases）](https://github.com/slme9364/ptcgl-vpn-manager/releases/latest)
+
+`v0.1.8`ではWindowsの黒い画面、WireGuardサービスの設定ファイル読み込み、接続済みの誤表示を修正しています。詳細は[リリースノート](docs/releases/v0.1.8.md)を参照してください。
+
+配布バイナリはコード署名・macOS公証を行っていないため、OSの警告が表示される場合があります。利用前に各OS向けセットアップ手順と[セキュリティ設計](docs/security.md)を確認してください。
 
 ## 必要条件
 
