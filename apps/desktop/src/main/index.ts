@@ -1,25 +1,31 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, clipboard } from 'electron';
 import { existsSync } from 'node:fs';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import Store from 'electron-store';
+import { gameProcessIds, detectGame, localDiagnostics, diagnosticError } from './desktop-tools';
 import electronUpdater from 'electron-updater';
 import { z } from 'zod';
-import { DEFAULT_SETTINGS, REGIONS, type AppSettings, type DashboardState } from '@ptcgl/core';
+import { DEFAULT_SETTINGS, REGIONS, launchGame, SessionExitGuard, redactDiagnosticText, type ActivityEntry, type DiagnosticReport, type LaunchMode, type AppSettings, type DashboardState } from '@ptcgl/core';
 import { GcpVmClient, TerraformRunner, type DeploymentInput } from '@ptcgl/gcp';
 import { readClientPublicKey, updateClientAddressFile, updateEndpointFile, WireGuardController, WireSockController } from '@ptcgl/vpn';
 
 // This utility does not need GPU rendering. Disabling it avoids black windows
 // seen with some Windows GPU/driver combinations.
 app.disableHardwareAcceleration();
+if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
+app.on('second-instance', () => {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+});
 
 const schema = z.object({
   projectId: z.string().regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]$|^$/),
   zone: z.string().regex(/^[a-z]+-[a-z]+\d-[a-z]$/), instanceName: z.string().regex(/^[a-z]([-a-z0-9]*[a-z0-9])?$/),
   region: z.string().regex(/^[a-z]+-[a-z]+\d$/), ptcglExecutable: z.string(), wireGuardConfigPath: z.string(),
   vpnClient: z.enum(['wireguard', 'wiresock']), vpnMode: z.enum(['full-tunnel', 'destination-split', 'windows-app-split']),
-  maxRuntimeMinutes: z.number().int().min(15).max(1440), autoStop: z.boolean(), logLevel: z.enum(['error', 'warn', 'info', 'debug']),
+  maxRuntimeMinutes: z.number().int().min(15).max(1440), autoStop: z.boolean(), disconnectOnGameExit: z.boolean().default(true), logLevel: z.enum(['error', 'warn', 'info', 'debug']),
   terraformExecutable: z.string().min(1), infrastructurePath: z.string(), clientPublicKey: z.string(), clientAddress: z.string()
 });
 const store = new Store<{ settings: AppSettings }>({ defaults: { settings: DEFAULT_SETTINGS }, encryptionKey: 'ptcgl-vpn-settings-v1' });
@@ -28,9 +34,13 @@ const wireguard = new WireGuardController();
 const wiresock = new WireSockController(message => publish({ vpnStatus: 'ERROR', vpnHandshakeAt: undefined, message }), at => publish({ vpnHandshakeAt: at }));
 const { autoUpdater } = electronUpdater;
 const getSettings = (): AppSettings => ({ ...DEFAULT_SETTINGS, ...store.get('settings') });
-let state: DashboardState = { vmStatus: 'UNKNOWN', vpnStatus: 'DISCONNECTED', region: getSettings().region, estimatedMonthlyCost: 0, busy: false, infraStatus: 'IDLE' };
-let operation: Promise<void> | undefined;
+let state: DashboardState = { vmStatus: 'UNKNOWN', vpnStatus: 'DISCONNECTED', region: getSettings().region, estimatedMonthlyCost: 0, busy: false, infraStatus: 'IDLE', activities: [] };
+let operation: Promise<unknown> | undefined;
 let plannedDeploymentId: string | undefined;
+let activityId = 0;
+let latestReport: DiagnosticReport | undefined;
+const exitGuard = new SessionExitGuard(15000);
+let checkingGame = false;
 type UpdateState = { status: 'IDLE' | 'CHECKING' | 'AVAILABLE' | 'DOWNLOADING' | 'READY' | 'CURRENT' | 'ERROR'; currentVersion: string; availableVersion?: string; percent?: number; message?: string };
 let updateState: UpdateState = { status: 'IDLE', currentVersion: app.getVersion() };
 
@@ -43,7 +53,17 @@ function writeDiagnostic(message: string) {
 }
 
 function target() { const s = getSettings(); return { projectId: s.projectId, zone: s.zone, instanceName: s.instanceName }; }
-function publish(patch: Partial<DashboardState>) { state = { ...state, ...patch }; BrowserWindow.getAllWindows().forEach(w => w.webContents.send('state:changed', state)); }
+function activity(level: ActivityEntry['level'], title: string, detail?: string) {
+  const safe = detail ? diagnosticError(new Error(detail), getSettings()) : undefined;
+  publish({ activities: [...(state.activities ?? []), { id: ++activityId, at: new Date().toISOString(), level, title, detail: safe }].slice(-80) });
+}
+function publish(patch: Partial<DashboardState>) {
+  const entries = [...(patch.activities ?? state.activities ?? [])];
+  if (patch.vpnStatus && patch.vpnStatus !== state.vpnStatus) entries.push({ id: ++activityId, at: new Date().toISOString(), level: patch.vpnStatus === 'ERROR' ? 'error' : 'info', title: 'VPN: ' + patch.vpnStatus });
+  if (patch.vmStatus && patch.vmStatus !== state.vmStatus) entries.push({ id: ++activityId, at: new Date().toISOString(), level: 'info', title: 'VM: ' + patch.vmStatus });
+  state = { ...state, ...patch, activities: entries.slice(-80) };
+  BrowserWindow.getAllWindows().forEach(w => w.webContents.send('state:changed', state));
+}
 function publishUpdate(patch: Partial<UpdateState>) { updateState = { ...updateState, ...patch }; BrowserWindow.getAllWindows().forEach(w => w.webContents.send('update:changed', updateState)); }
 async function refreshVpnStatus() {
   const s = getSettings();
@@ -60,12 +80,25 @@ async function refreshVpnStatus() {
   }
 }
 async function refresh() { const vm = await gcp.get(target()); publish({ vmStatus: vm.status, externalIp: vm.externalIp, region: getSettings().region }); await refreshVpnStatus(); return vm; }
-async function exclusive(task: () => Promise<void>) { if (operation) throw new Error('別の操作が進行中です'); publish({ busy: true, message: undefined }); operation = task().finally(() => { operation = undefined; publish({ busy: false }); }); return operation; }
+async function exclusive<T>(task: () => Promise<T>): Promise<T> {
+  if (operation) throw new Error('別の操作が進行中です');
+  publish({ busy: true, message: undefined });
+  const pending = Promise.resolve().then(task); operation = pending;
+  try { return await pending; }
+  catch (error) { activity('error', '操作に失敗しました', error instanceof Error ? error.message : String(error)); throw error; }
+  finally { operation = undefined; publish({ busy: false }); }
+}
 
 async function connect() {
   const s = getSettings();
   if (!s.projectId) throw new Error('Project IDを設定してください');
   if (!s.wireGuardConfigPath) throw new Error('WireGuard設定ファイルを設定してください');
+  activity('info', 'VPN接続を開始');
+  const report = await localDiagnostics(s);
+  const required = new Set(['client','admin','config','interface','peer','target']);
+  if (s.vpnClient === 'wiresock') required.add('game');
+  const failure = report.checks.find(check => check.status === 'error' && required.has(check.id));
+  if (failure) throw new Error(failure.title + ': ' + failure.detail);
   publish({ vpnStatus: 'CONNECTING', message: 'VMの状態を確認しています' });
   try {
     let vm = await refresh();
@@ -96,28 +129,71 @@ async function connect() {
   }
 }
 
-async function startSession() {
+async function disconnectLocalVpn() {
+  exitGuard.disarm();
   const s = getSettings();
-  if (!s.ptcglExecutable) throw new Error('PTCGL実行ファイルを設定してください');
-  await connect();
-  publish({ startedAt: new Date().toISOString() });
-  const child = spawn(s.ptcglExecutable, [], { detached: false, stdio: 'ignore' });
-  child.once('exit', () => void endSession());
-  child.once('error', error => publish({ message: `PTCGLの起動に失敗しました: ${error.message}` }));
+  await wiresock.disconnect();
+  if (s.wireGuardConfigPath && (process.platform === 'win32' || state.vpnStatus !== 'DISCONNECTED')) await wireguard.disconnect(s.wireGuardConfigPath);
+  publish({ vpnStatus: 'DISCONNECTED', vpnHealth: undefined, vpnHandshakeAt: undefined, vpnScope: undefined });
 }
 
-async function endSession() {
-  if (operation) return;
-  await exclusive(async () => {
-    const s = getSettings();
-    try { if (state.vpnStatus !== 'DISCONNECTED') { await wiresock.disconnect(); await wireguard.disconnect(s.wireGuardConfigPath); } publish({ vpnStatus: 'DISCONNECTED', vpnHealth: undefined, vpnHandshakeAt: undefined, vpnScope: undefined }); }
-    finally {
-      if (s.autoStop) {
-        // MVP has no authoritative multi-device presence signal. Never auto-stop blindly.
-        publish({ message: '他端末の利用状況を確認できないため、VMは自動停止していません。確認後に停止してください。' });
-      }
-    }
+async function runLaunch(mode: LaunchMode) {
+  const s = getSettings();
+  if (!s.ptcglExecutable || !existsSync(s.ptcglExecutable)) throw new Error('設定画面からPTCGLの実行ファイルを選択してください');
+  exitGuard.disarm();
+  activity('info', mode === 'normal' ? '通常回線でPTCGLを開く' : 'VPNでPTCGLを開く');
+  const result = await launchGame(mode, {
+    connect, disconnect: disconnectLocalVpn,
+    isRunning: async () => (await gameProcessIds(s.ptcglExecutable)).length > 0,
+    start: () => new Promise<void>((resolveSpawn, reject) => {
+      const child = spawn(s.ptcglExecutable, [], { detached: false, stdio: 'ignore' });
+      child.once('spawn', resolveSpawn); child.once('error', reject);
+    })
   });
+  if (mode === 'vpn') exitGuard.arm();
+  publish({ gameRunning: true, lastLaunchMode: mode, startedAt: new Date().toISOString(),
+    message: result.alreadyRunning ? 'PTCGLまたは更新ツールは起動済みです。新しいプロセスは起動していません。' : mode === 'normal' ? 'ManagerのVPNを使わずPTCGLを起動しました。ログインはゲーム内で進めてください。' : 'VPNへ接続し、PTCGLを起動しました' });
+}
+
+async function refreshGameState() {
+  if (checkingGame) return;
+  checkingGame = true;
+  try {
+    const s = getSettings();
+    const running = (await gameProcessIds(s.ptcglExecutable)).length > 0;
+    if (state.gameRunning !== running) publish({ gameRunning: running });
+    if (!state.busy && s.disconnectOnGameExit !== false && exitGuard.observe(running)) {
+      await exclusive(async () => { await disconnectLocalVpn(); activity('info','ゲーム終了を確認しVPNを切断'); publish({ message:'ゲーム終了を確認してVPNを切断しました。VM停止は別操作です。' }); });
+    }
+  } catch { publish({ gameRunning: undefined }); }
+  finally { checkingGame = false; }
+}
+
+async function diagnose() {
+  const s = getSettings();
+  const report = await localDiagnostics(s);
+  if (report.checks.find(check => check.id === 'target')?.status === 'ok' && report.checks.find(check => check.id === 'credentials')?.status === 'ok') {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const vm = await Promise.race([gcp.get(target()),new Promise<never>((_,reject) => { timeout = setTimeout(() => reject(new Error('クラウド確認がタイムアウトしました')),15000); })]);
+      report.checks.push({id:'cloud',title:'クラウド読み取り確認',status:'ok',detail:'VM状態: '+vm.status+'。起動・停止は行っていません。'});
+      publish({vmStatus:vm.status,externalIp:vm.externalIp});
+    } catch (error) { report.checks.push({id:'cloud',title:'クラウド読み取り確認',status:'error',detail:diagnosticError(error,s)}); }
+    finally { if (timeout) clearTimeout(timeout); }
+  }
+  latestReport = report;
+  activity('info','設定診断が完了',report.checks.filter(check => check.status === 'error').length+'件の要確認項目');
+  return report;
+}
+
+async function copyDiagnostics() {
+  const report = latestReport ?? await localDiagnostics(getSettings());
+  const context = getSettings();
+  const lines = ['PTCGL VPN Manager '+app.getVersion(), 'Platform: '+process.platform,
+    'VM: '+state.vmStatus, 'VPN: '+state.vpnStatus, 'Scope: '+(state.vpnScope ?? 'none'), 'Checked: '+report.checkedAt,
+    ...report.checks.map(check => '['+check.status+'] '+check.title+': '+check.detail),
+    '', 'Recent activity:', ...(state.activities ?? []).slice(-20).map(entry => entry.at+' '+entry.title+' '+(entry.detail ?? ''))];
+  clipboard.writeText(lines.map(line => redactDiagnosticText(line,[context.projectId,context.instanceName])).join('\n'));
 }
 
 function infrastructurePath(settings: AppSettings) {
@@ -140,19 +216,32 @@ function appendInfraLog(value: string) { publish({ infraLog: `${state.infraLog ?
 function registerIpc() {
   ipcMain.handle('state:get', () => state);
   ipcMain.handle('settings:get', () => getSettings());
-  ipcMain.handle('settings:set', async (_e, input: unknown) => { let settings = schema.parse(input); if (!settings.clientPublicKey && settings.wireGuardConfigPath) settings = { ...settings, clientPublicKey: await readClientPublicKey(settings.wireGuardConfigPath) }; store.set('settings', settings); publish({ region: settings.region }); return settings; });
-  ipcMain.handle('app:detect', async () => {
-    const candidates = process.platform === 'win32' ? [
-      join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Pokemon Trading Card Game Live', 'Pokemon TCG Live.exe'),
-      join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Pokemon Trading Card Game Live', 'Pokemon TCG Live.exe')
-    ] : ['/Applications/Pokemon TCG Live.app/Contents/MacOS/Pokemon TCG Live', join(app.getPath('home'), 'Applications', 'Pokemon TCG Live.app', 'Contents', 'MacOS', 'Pokemon TCG Live')];
-    return candidates.find(existsSync) ?? '';
+  ipcMain.handle('settings:set', async (_e, input: unknown) => {
+    let settings = schema.parse(input);
+    const previous = getSettings();
+    const critical: (keyof AppSettings)[] = ['projectId','zone','instanceName','region','ptcglExecutable','wireGuardConfigPath','vpnClient','vpnMode','clientPublicKey','clientAddress'];
+    if (state.vpnStatus === 'CONNECTED' && critical.some(key => settings[key] !== previous[key])) throw new Error('接続設定はVPNを切断してから変更してください');
+    if (!settings.clientPublicKey && settings.wireGuardConfigPath) settings = { ...settings, clientPublicKey: await readClientPublicKey(settings.wireGuardConfigPath) };
+    store.set('settings', settings); plannedDeploymentId = undefined; latestReport = undefined;
+    publish({ region:settings.region,infraStatus:'IDLE',infraLog:undefined }); activity('info','設定を保存'); return settings;
   });
+  ipcMain.handle('app:detect', () => detectGame(app.getPath('home')));
+  ipcMain.handle('paths:pick', async (_e, input: unknown) => {
+    const kind = z.enum(['game','config']).parse(input);
+    const result = await dialog.showOpenDialog({title:kind === 'game' ? 'PTCGL実行ファイルを選択' : 'WireGuard設定ファイルを選択',
+      properties:['openFile'], filters:kind === 'config' ? [{name:'WireGuard設定',extensions:['conf']}] : process.platform === 'win32' ? [{name:'実行ファイル',extensions:['exe']}] : [{name:'アプリケーション・実行ファイル',extensions:['app','*']}]});
+    if (result.canceled || !result.filePaths[0]) return null;
+    const selected = result.filePaths[0];
+    return kind === 'game' && selected.endsWith('.app') ? join(selected,'Contents','MacOS','Pokemon TCG Live') : selected;
+  });
+  ipcMain.handle('diagnostics:run', () => exclusive(diagnose));
+  ipcMain.handle('diagnostics:copy', copyDiagnostics);
   ipcMain.handle('vm:refresh', () => exclusive(async () => { await refresh(); }));
-  ipcMain.handle('vm:stop', () => exclusive(async () => { publish({ vmStatus: 'STOPPING' }); await gcp.stop(target()); await refresh(); publish({ startedAt: undefined, message: 'VMを停止しました' }); }));
+  ipcMain.handle('vm:stop', () => exclusive(async () => { await disconnectLocalVpn(); publish({ vmStatus: 'STOPPING' }); await gcp.stop(target()); await refresh(); publish({ startedAt: undefined, message: 'VMを停止しました' }); }));
   ipcMain.handle('vpn:connect', () => exclusive(connect));
-  ipcMain.handle('vpn:disconnect', () => exclusive(async () => { const s = getSettings(); await wiresock.disconnect(); await wireguard.disconnect(s.wireGuardConfigPath); publish({ vpnStatus: 'DISCONNECTED', vpnHealth: undefined, vpnHandshakeAt: undefined, vpnScope: undefined }); }));
-  ipcMain.handle('session:start', () => exclusive(startSession));
+  ipcMain.handle('vpn:disconnect', () => exclusive(async () => { await disconnectLocalVpn(); activity('info','VPNを切断'); }));
+  ipcMain.handle('session:start', () => exclusive(() => runLaunch('vpn')));
+  ipcMain.handle('session:normal', () => exclusive(() => runLaunch('normal')));
   ipcMain.handle('update:get', () => updateState);
   ipcMain.handle('update:check', async () => {
     if (!app.isPackaged) throw new Error('更新確認はパッケージ版でのみ利用できます');
@@ -160,7 +249,10 @@ function registerIpc() {
     await autoUpdater.checkForUpdates();
   });
   ipcMain.handle('update:download', async () => { await autoUpdater.downloadUpdate(); });
-  ipcMain.handle('update:install', () => autoUpdater.quitAndInstall(false, true));
+  ipcMain.handle('update:install', async () => {
+    if (state.busy || state.vpnStatus === 'CONNECTED' || (await gameProcessIds(getSettings().ptcglExecutable)).length > 0) throw new Error('ゲームを終了し、VPNを切断してから更新してください');
+    autoUpdater.quitAndInstall(false,true);
+  });
   ipcMain.handle('infra:regions', () => REGIONS);
   ipcMain.handle('infra:plan', (_e, deploymentId: unknown) => exclusive(async () => {
     const id = z.string().parse(deploymentId); plannedDeploymentId = undefined; publish({ infraStatus: 'PLANNING', infraLog: '', message: 'Terraform planを作成しています' });
@@ -183,7 +275,7 @@ function registerIpc() {
 
 function configureAutoUpdater() {
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.on('update-available', info => publishUpdate({ status: 'AVAILABLE', availableVersion: info.version, message: `v${info.version}を利用できます` }));
   autoUpdater.on('update-not-available', () => publishUpdate({ status: 'CURRENT', availableVersion: undefined, message: '最新版です' }));
   autoUpdater.on('download-progress', progress => publishUpdate({ status: 'DOWNLOADING', percent: Math.round(progress.percent), message: `更新をダウンロード中: ${Math.round(progress.percent)}%` }));
@@ -210,6 +302,8 @@ app.whenReady().then(() => {
   writeDiagnostic(`startup version=${app.getVersion()} platform=${process.platform} arch=${process.arch}`);
   registerIpc(); configureAutoUpdater(); createWindow();
   void refreshVpnStatus();
+  void refreshGameState();
+  const gameTimer = setInterval(() => void refreshGameState(),5000); gameTimer.unref();
   const vpnStatusTimer = setInterval(() => {
     if (!state.busy && (state.vpnStatus === 'CONNECTED' || wiresock.isRunning)) void refreshVpnStatus();
   }, 5000);

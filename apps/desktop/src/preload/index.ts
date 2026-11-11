@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AppSettings, DashboardState } from '@ptcgl/core';
+import type { AppSettings, DashboardState, DiagnosticReport } from '@ptcgl/core';
 type UpdateState = { status: 'IDLE' | 'CHECKING' | 'AVAILABLE' | 'DOWNLOADING' | 'READY' | 'CURRENT' | 'ERROR'; currentVersion: string; availableVersion?: string; percent?: number; message?: string };
 contextBridge.exposeInMainWorld('ptcgl', {
   getState: (): Promise<DashboardState> => ipcRenderer.invoke('state:get'),
@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld('ptcgl', {
   refresh: () => ipcRenderer.invoke('vm:refresh'), stopVm: () => ipcRenderer.invoke('vm:stop'),
   connect: () => ipcRenderer.invoke('vpn:connect'), disconnect: () => ipcRenderer.invoke('vpn:disconnect'),
   startSession: () => ipcRenderer.invoke('session:start'),
+  startNormally: (): Promise<void> => ipcRenderer.invoke('session:normal'),
+  pickPath: (kind: 'game' | 'config'): Promise<string | null> => ipcRenderer.invoke('paths:pick',kind),
+  diagnose: (): Promise<DiagnosticReport> => ipcRenderer.invoke('diagnostics:run'),
+  copyDiagnostics: (): Promise<void> => ipcRenderer.invoke('diagnostics:copy'),
   getUpdateState: (): Promise<UpdateState> => ipcRenderer.invoke('update:get'),
   checkForUpdates: (): Promise<void> => ipcRenderer.invoke('update:check'),
   downloadUpdate: (): Promise<void> => ipcRenderer.invoke('update:download'),

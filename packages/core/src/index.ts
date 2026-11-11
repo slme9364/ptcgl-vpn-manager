@@ -22,6 +22,7 @@ export interface AppSettings {
   vpnMode: VpnMode;
   maxRuntimeMinutes: number;
   autoStop: boolean;
+  disconnectOnGameExit?: boolean;
   logLevel: 'error' | 'warn' | 'info' | 'debug';
   terraformExecutable: string;
   infrastructurePath: string;
@@ -40,6 +41,9 @@ export interface DashboardState {
   region: string;
   estimatedMonthlyCost: number;
   busy: boolean;
+  gameRunning?: boolean;
+  lastLaunchMode?: 'normal' | 'vpn';
+  activities?: import('./operations').ActivityEntry[];
   message?: string;
   infraStatus?: InfraStatus;
   infraLog?: string;
@@ -64,6 +68,8 @@ export function estimateCost(model: PriceModel, vmHours: number, ipv4Hours: numb
 export const DEFAULT_SETTINGS: AppSettings = {
   projectId: '', zone: 'asia-southeast1-b', instanceName: 'ptcgl-vpn', region: 'asia-southeast1',
   ptcglExecutable: '', wireGuardConfigPath: '', vpnClient: 'wireguard', vpnMode: 'full-tunnel',
-  maxRuntimeMinutes: 240, autoStop: true, logLevel: 'info', terraformExecutable: 'terraform',
+  maxRuntimeMinutes: 240, autoStop: true, disconnectOnGameExit: true, logLevel: 'info', terraformExecutable: 'terraform',
   infrastructurePath: '', clientPublicKey: '', clientAddress: '10.66.0.2/32'
 };
+
+export * from './operations';

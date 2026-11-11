@@ -21,7 +21,7 @@ GCP（Singapore）への実デプロイ、macOSからのWireGuard接続、VPN経
 
 [最新版のダウンロード（GitHub Releases）](https://github.com/slme9364/ptcgl-vpn-manager/releases/latest)
 
-`v0.1.9`では再接続エラーを修正し、WindowsでPTCGLだけをVPNに通すWireSockモードに対応しています。詳細は[リリースノート](docs/releases/v0.1.9.md)を参照してください。
+`v0.2.0`では通常回線／VPNの起動を分け、接続診断、ファイル選択、二重起動防止、ゲーム終了監視、プレイ中の更新適用防止を追加しています。詳細は[リリースノート](docs/releases/v0.2.0.md)を参照してください。
 
 配布バイナリはコード署名・macOS公証を行っていないため、OSの警告が表示される場合があります。利用前に各OS向けセットアップ手順と[セキュリティ設計](docs/security.md)を確認してください。
 
