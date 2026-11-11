@@ -1,5 +1,16 @@
 # Windowsセットアップ
 
+## 壊れたインストールのクリーンアップ
+
+インストーラーやアンインストーラーが完了しない場合は、管理者PowerShellで次を実行します。PTCGL、WireGuard、GCP認証情報は削除しません。
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\cleanup-windows.ps1
+```
+
+削除対象を事前確認する場合は `-WhatIf`、VPN Managerの保存設定も削除する場合は `-RemoveSettings` を付けます。
+
 ## 必要なソフトウェア
 
 - Google Cloud CLI（`gcloud auth application-default login`を一度実行）
