@@ -50,11 +50,19 @@ async function exclusive(task: () => Promise<void>) { if (operation) throw new E
 
 async function connect() {
   const s = getSettings();
+  if (!s.projectId) throw new Error('Project IDを設定してください');
   if (!s.wireGuardConfigPath) throw new Error('WireGuard設定ファイルを設定してください');
-  publish({ vpnStatus: 'CONNECTING', message: 'VPNへ接続しています' });
+  publish({ vpnStatus: 'CONNECTING', message: 'VMの状態を確認しています' });
   try {
-    const vm = await refresh();
+    let vm = await refresh();
+    if (vm.status !== 'RUNNING') {
+      publish({ vmStatus: 'STARTING', message: 'VMを起動しています' });
+      await gcp.start(target());
+      vm = await refresh();
+    }
+    if (vm.status !== 'RUNNING') throw new Error('VMが起動状態になりませんでした');
     if (!vm.externalIp) throw new Error('VMの外部IPv4を取得できません');
+    publish({ vpnStatus: 'CONNECTING', message: 'VPNへ接続しています' });
     await updateEndpointFile(s.wireGuardConfigPath, vm.externalIp);
     if (s.vpnClient === 'wiresock') {
       if (process.platform !== 'win32') throw new Error('WireSockはWindowsでのみ利用できます');
@@ -70,12 +78,9 @@ async function connect() {
 
 async function startSession() {
   const s = getSettings();
-  if (!s.projectId || !s.ptcglExecutable) throw new Error('Project IDとPTCGL実行ファイルを設定してください');
-  let vm = await refresh();
-  if (vm.status !== 'RUNNING') { publish({ vmStatus: 'STARTING', message: 'VMを起動しています' }); await gcp.start(target()); vm = await refresh(); }
-  if (vm.status !== 'RUNNING') throw new Error('VMが起動状態になりませんでした');
-  publish({ startedAt: new Date().toISOString() });
+  if (!s.ptcglExecutable) throw new Error('PTCGL実行ファイルを設定してください');
   await connect();
+  publish({ startedAt: new Date().toISOString() });
   const child = spawn(s.ptcglExecutable, [], { detached: false, stdio: 'ignore' });
   child.once('exit', () => void endSession());
   child.once('error', error => publish({ message: `PTCGLの起動に失敗しました: ${error.message}` }));
