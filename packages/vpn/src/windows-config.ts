@@ -27,8 +27,8 @@ export async function stageWindowsConfig(source: string): Promise<string> {
     "$fileAcl.SetOwner($owner)",
     "$fileAcl.SetAccessRuleProtection($true,$false)",
     "foreach($sid in $sids) { $folderAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')); $fileAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','Allow')) }",
-    "Set-Acl -LiteralPath $directory -AclObject $folderAcl",
-    "Set-Acl -LiteralPath $target -AclObject $fileAcl"
+    "[System.IO.Directory]::SetAccessControl($directory,$folderAcl)",
+    "[System.IO.File]::SetAccessControl($target,$fileAcl)"
   ].join('; ');
   await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encode(command)], { windowsHide: true, timeout: 15000 });
   const config = await fs.readFile(source);

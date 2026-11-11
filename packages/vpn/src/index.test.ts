@@ -19,3 +19,26 @@ describe('addWireSockAllowedApp', () => {
   });
   it('rejects config injection', () => expect(() => addWireSockAllowedApp('[Interface]\n', 'game.exe\nDisallowedApps=*')).toThrow());
 });
+
+describe('reconnection with unchanged settings', () => {
+  it('accepts an already current endpoint', () => {
+    const config = '[Peer]\nEndpoint = 192.0.2.1:51820\n';
+    expect(updateEndpoint(config, '192.0.2.1')).toBe(config);
+  });
+  it('accepts an already current client address', () => {
+    const config = '[Interface]\nAddress = 10.66.0.3/32\n';
+    expect(updateClientAddress(config, '10.66.0.3/32')).toBe(config);
+  });
+  it('still rejects an actually missing endpoint', () => {
+    expect(() => updateEndpoint('[Peer]\n', '192.0.2.1')).toThrow('no Endpoint');
+  });
+  it('places the exact allowed executable under Peer and preserves system DNS', () => {
+    const config = '[Interface]\nPrivateKey = secret\nDNS = 1.1.1.1\nAllowedApps = chrome.exe\n[Peer]\nPublicKey = server\n';
+    const output = addWireSockAllowedApp(config, 'D:\\Games\\Pokemon TCG Live.exe');
+    expect(output.split('[Peer]')[0]).not.toContain('AllowedApps');
+    expect(output.split('[Peer]')[1]).toContain('#@ws:AllowedApps = D:\\Games\\Pokemon TCG Live.exe');
+    expect(output).not.toContain('DNS =');
+    expect(output).not.toContain('chrome.exe');
+    expect(output).toContain('PrivateKey = secret');
+  });
+});

@@ -33,6 +33,8 @@ export interface DashboardState {
   vmStatus: VmStatus;
   vpnStatus: VpnStatus;
   externalIp?: string;
+  vpnScope?: 'full' | 'ptcgl';
+  vpnHandshakeAt?: string;
   vpnHealth?: { lastHandshakeAt?: string; receivedBytes: number; sentBytes: number };
   startedAt?: string;
   region: string;

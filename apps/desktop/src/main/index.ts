@@ -25,7 +25,7 @@ const schema = z.object({
 const store = new Store<{ settings: AppSettings }>({ defaults: { settings: DEFAULT_SETTINGS }, encryptionKey: 'ptcgl-vpn-settings-v1' });
 const gcp = new GcpVmClient();
 const wireguard = new WireGuardController();
-const wiresock = new WireSockController();
+const wiresock = new WireSockController(message => publish({ vpnStatus: 'ERROR', vpnHandshakeAt: undefined, message }), at => publish({ vpnHandshakeAt: at }));
 const { autoUpdater } = electronUpdater;
 const getSettings = (): AppSettings => ({ ...DEFAULT_SETTINGS, ...store.get('settings') });
 let state: DashboardState = { vmStatus: 'UNKNOWN', vpnStatus: 'DISCONNECTED', region: getSettings().region, estimatedMonthlyCost: 0, busy: false, infraStatus: 'IDLE' };
@@ -45,9 +45,13 @@ function writeDiagnostic(message: string) {
 function target() { const s = getSettings(); return { projectId: s.projectId, zone: s.zone, instanceName: s.instanceName }; }
 function publish(patch: Partial<DashboardState>) { state = { ...state, ...patch }; BrowserWindow.getAllWindows().forEach(w => w.webContents.send('state:changed', state)); }
 function publishUpdate(patch: Partial<UpdateState>) { updateState = { ...updateState, ...patch }; BrowserWindow.getAllWindows().forEach(w => w.webContents.send('update:changed', updateState)); }
-async function refreshWireGuardStatus() {
+async function refreshVpnStatus() {
   const s = getSettings();
-  if (process.platform !== 'win32' || s.vpnClient !== 'wireguard' || !s.wireGuardConfigPath || state.vpnStatus === 'CONNECTING' || state.vpnStatus === 'DISCONNECTING') return;
+  if (process.platform !== 'win32' || !s.wireGuardConfigPath || state.vpnStatus === 'CONNECTING' || state.vpnStatus === 'DISCONNECTING') return;
+  if (s.vpnClient === 'wiresock') {
+    if (wiresock.isRunning) publish({ vpnStatus: wiresock.hasRecentHandshake ? 'CONNECTED' : 'ERROR', vpnScope: 'ptcgl', vpnHandshakeAt: wiresock.lastHandshakeAt });
+    return;
+  }
   try {
     const health = await wireguard.diagnostics(s.wireGuardConfigPath);
     publish({ vpnHealth: health, vpnStatus: health.connected ? 'CONNECTED' : 'DISCONNECTED' });
@@ -55,7 +59,7 @@ async function refreshWireGuardStatus() {
     publish({ vpnHealth: undefined, vpnStatus: state.vpnStatus === 'CONNECTED' ? 'ERROR' : state.vpnStatus });
   }
 }
-async function refresh() { const vm = await gcp.get(target()); publish({ vmStatus: vm.status, externalIp: vm.externalIp, region: getSettings().region }); await refreshWireGuardStatus(); return vm; }
+async function refresh() { const vm = await gcp.get(target()); publish({ vmStatus: vm.status, externalIp: vm.externalIp, region: getSettings().region }); await refreshVpnStatus(); return vm; }
 async function exclusive(task: () => Promise<void>) { if (operation) throw new Error('別の操作が進行中です'); publish({ busy: true, message: undefined }); operation = task().finally(() => { operation = undefined; publish({ busy: false }); }); return operation; }
 
 async function connect() {
@@ -77,14 +81,17 @@ async function connect() {
     if (s.vpnClient === 'wiresock') {
       if (process.platform !== 'win32') throw new Error('WireSockはWindowsでのみ利用できます');
       if (!s.ptcglExecutable) throw new Error('WireSockにはPTCGL実行ファイルの設定が必要です');
-      await wiresock.connect(s.wireGuardConfigPath, s.ptcglExecutable);
+      await wireguard.disconnect(s.wireGuardConfigPath);
+      const health = await wiresock.connect(s.wireGuardConfigPath, s.ptcglExecutable);
+      publish({ vpnHealth: undefined, vpnScope: 'ptcgl', vpnHandshakeAt: health.lastHandshakeAt });
     } else {
+      await wiresock.disconnect();
       const health = await wireguard.connect(s.wireGuardConfigPath);
-      publish({ vpnHealth: health });
+      publish({ vpnHealth: health, vpnScope: 'full', vpnHandshakeAt: undefined });
     }
-    publish({ vpnStatus: 'CONNECTED', message: s.vpnClient === 'wireguard' ? (process.platform === 'win32' ? 'WireGuardサーバーとのハンドシェイクを確認しました' : 'WireGuardを起動しました。通信の確認は別途必要です') : 'WireSockを起動しました。通信の確認は別途必要です' });
+    publish({ vpnStatus: 'CONNECTED', message: s.vpnClient === 'wireguard' ? (process.platform === 'win32' ? 'WireGuardサーバーとのハンドシェイクを確認しました' : 'WireGuardを起動しました。通信の確認は別途必要です') : 'PTCGL専用VPNのハンドシェイクを確認しました。Chromeなど他のアプリは通常回線です' });
   } catch (error) {
-    publish({ vpnStatus: 'ERROR', vpnHealth: undefined, message: error instanceof Error ? error.message : String(error) });
+    publish({ vpnStatus: 'ERROR', vpnHealth: undefined, vpnHandshakeAt: undefined, message: error instanceof Error ? error.message : String(error) });
     throw error;
   }
 }
@@ -103,7 +110,7 @@ async function endSession() {
   if (operation) return;
   await exclusive(async () => {
     const s = getSettings();
-    try { if (state.vpnStatus !== 'DISCONNECTED') { if (s.vpnClient === 'wiresock') await wiresock.disconnect(); else await wireguard.disconnect(s.wireGuardConfigPath); } publish({ vpnStatus: 'DISCONNECTED' }); }
+    try { if (state.vpnStatus !== 'DISCONNECTED') { await wiresock.disconnect(); await wireguard.disconnect(s.wireGuardConfigPath); } publish({ vpnStatus: 'DISCONNECTED', vpnHealth: undefined, vpnHandshakeAt: undefined, vpnScope: undefined }); }
     finally {
       if (s.autoStop) {
         // MVP has no authoritative multi-device presence signal. Never auto-stop blindly.
@@ -144,7 +151,7 @@ function registerIpc() {
   ipcMain.handle('vm:refresh', () => exclusive(async () => { await refresh(); }));
   ipcMain.handle('vm:stop', () => exclusive(async () => { publish({ vmStatus: 'STOPPING' }); await gcp.stop(target()); await refresh(); publish({ startedAt: undefined, message: 'VMを停止しました' }); }));
   ipcMain.handle('vpn:connect', () => exclusive(connect));
-  ipcMain.handle('vpn:disconnect', () => exclusive(async () => { const s = getSettings(); if (s.vpnClient === 'wiresock') await wiresock.disconnect(); else await wireguard.disconnect(s.wireGuardConfigPath); publish({ vpnStatus: 'DISCONNECTED' }); }));
+  ipcMain.handle('vpn:disconnect', () => exclusive(async () => { const s = getSettings(); await wiresock.disconnect(); await wireguard.disconnect(s.wireGuardConfigPath); publish({ vpnStatus: 'DISCONNECTED', vpnHealth: undefined, vpnHandshakeAt: undefined, vpnScope: undefined }); }));
   ipcMain.handle('session:start', () => exclusive(startSession));
   ipcMain.handle('update:get', () => updateState);
   ipcMain.handle('update:check', async () => {
@@ -202,12 +209,20 @@ process.on('unhandledRejection', reason => writeDiagnostic(`unhandledRejection $
 app.whenReady().then(() => {
   writeDiagnostic(`startup version=${app.getVersion()} platform=${process.platform} arch=${process.arch}`);
   registerIpc(); configureAutoUpdater(); createWindow();
-  void refreshWireGuardStatus();
+  void refreshVpnStatus();
   const vpnStatusTimer = setInterval(() => {
-    if (!state.busy && state.vpnStatus === 'CONNECTED') void refreshWireGuardStatus();
+    if (!state.busy && (state.vpnStatus === 'CONNECTED' || wiresock.isRunning)) void refreshVpnStatus();
   }, 5000);
   vpnStatusTimer.unref();
   if (app.isPackaged) setTimeout(() => void autoUpdater.checkForUpdates().catch(error => publishUpdate({ status: 'ERROR', message: error instanceof Error ? error.message : String(error) })), 5000);
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+
+let wireSockQuitInProgress = false;
+app.on('before-quit', event => {
+  if (wiresock.isRunning && !wireSockQuitInProgress) {
+    event.preventDefault(); wireSockQuitInProgress = true;
+    void wiresock.disconnect().finally(() => app.quit());
+  }
+});
