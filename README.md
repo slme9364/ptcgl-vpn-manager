@@ -39,7 +39,7 @@ pnpm build
 pnpm dev
 ```
 
-パッケージ作成は `pnpm --filter @ptcgl/desktop package`。署名・公証は別途必要です。
+パッケージ作成は `pnpm --filter @ptcgl/desktop package`。署名・公証は別途必要です。Windowsでは通常のNSISインストーラーに加え、インストーラーの整合性エラー時に利用できるZIP版もReleaseへ添付します。
 
 ## 初期セットアップ
 

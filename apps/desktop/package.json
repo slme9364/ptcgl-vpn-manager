@@ -1,6 +1,6 @@
 {
   "name": "@ptcgl/desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "On-demand GCP WireGuard manager for PTCGL",
   "author": "PTCGL VPN Manager contributors",
   "private": true,
@@ -42,7 +42,17 @@
     "extraResources": [{ "from": "../../infrastructure/terraform", "to": "infrastructure/terraform", "filter": ["**/*", "!*.tfstate*", "!*.tfvars", "!.terraform/**", "!*.tfplan"] }],
     "publish": [{ "provider": "github", "owner": "slme9364", "repo": "ptcgl-vpn-manager" }],
     "mac": { "target": ["dmg", "zip"], "category": "public.app-category.utilities", "artifactName": "PTCGL-VPN-Manager-${version}-${arch}-${os}.${ext}" },
-    "win": { "target": "nsis", "requestedExecutionLevel": "requireAdministrator", "artifactName": "PTCGL-VPN-Manager-Setup-${version}.${ext}" },
+    "win": {
+      "target": ["nsis", "zip"],
+      "requestedExecutionLevel": "requireAdministrator",
+      "artifactName": "PTCGL-VPN-Manager-${version}-win-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "runAfterFinish": false,
+      "include": "build/installer.nsh"
+    },
     "linux": { "target": "AppImage" }
   }
 }
